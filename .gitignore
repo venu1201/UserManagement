@@ -1,0 +1,58 @@
+# Ignore build and publish outputs
+bin/
+obj/
+out/
+publish/
+TestResults/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Ignore NuGet packages
+*.nupkg
+packages/
+!packages/repositories.config
+
+# Ignore Visual Studio and Rider settings
+.vscode/
+.idea/
+*.sln.ide
+*.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Ignore logs, databases, and temp files
+logs/
+*.log
+*.tlog
+*.cache
+*.pdb
+*.sqlite
+*.db
+*.mdf
+*.ldf
+
+# Ignore generated files and dependencies
+node_modules/
+bower_components/
+wwwroot/lib/
+dist/
+
+# Ignore sensitive configuration files
+appsettings.Development.json
+appsettings.Local.json
+secrets.json
+.env
+
+# Ignore JetBrains Rider IDE files
+.idea/
+*.iml
+
+# Ignore Mac and Linux files
+.DS_Store
+*.swp
+*.swo
