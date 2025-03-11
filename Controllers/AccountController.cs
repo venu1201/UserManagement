@@ -43,6 +43,52 @@ public class AccountController : ControllerBase
 
         return Ok(userList);
     }
+    [HttpPost("[action]/{userEmail:string}/{isAdmin:bool}")]
+    public async Task<IActionResult> AddRole([FromRoute] string userEmail , [FromRoute] bool isAdmin )
+    {
+        if (string.IsNullOrEmpty(userEmail))
+        {
+            return BadRequest(new { Message = "Email is required" });
+        }
+
+        var user = await _userManager.FindByEmailAsync(userEmail);
+        if (user == null)
+        {
+            return NotFound(new { Message = $"User with email {userEmail} not found" });
+        }
+
+        try
+        {
+            var isCurrentlyAdmin = await _userManager.IsInRoleAsync(user, "Admin");
+
+            if (isAdmin && !isCurrentlyAdmin)
+            {
+                var addResult = await _userManager.AddToRoleAsync(user, "Admin");
+                if (!addResult.Succeeded)
+                {
+                    return BadRequest(new { Message = "Failed to add user to Admin role", Errors = addResult.Errors });
+                }
+                return Ok(new { Message = $"User {userEmail} has been promoted to Admin" });
+            }
+            else if (!isAdmin && isCurrentlyAdmin)
+            {
+                var removeResult = await _userManager.RemoveFromRoleAsync(user, "Admin");
+                if (!removeResult.Succeeded)
+                {
+                    return BadRequest(new { Message = "Failed to remove user from Admin role", Errors = removeResult.Errors });
+                }
+                return Ok(new { Message = $"User {userEmail} has been removed from Admin role" });
+            }
+
+            var currentStatus = isCurrentlyAdmin ? "already an Admin" : "not an Admin";
+            return Ok(new { Message = $"User {userEmail} is {currentStatus}, no changes made" });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { Message = "Error updating admin status", Error = ex.Message });
+        }
+    }
+
 
     [HttpPost("verify-token/{tokenRequest}")]
     public async Task<IActionResult> VerifyGoogleToken([FromRoute] string tokenRequest)
@@ -94,7 +140,6 @@ public class AccountController : ControllerBase
         }
     }
 
-    // JWT Token Generation Method
     private string GenerateJwtToken(IdentityUser user)
     {
         var tokenHandler = new JwtSecurityTokenHandler();
