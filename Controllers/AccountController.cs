@@ -43,7 +43,7 @@ public class AccountController : ControllerBase
 
         return Ok(userList);
     }
-    [HttpPost("[action]/{userEmail:string}/{isAdmin:bool}")]
+    [HttpPost("[action]/{userEmail}/{isAdmin:bool}")]
     public async Task<IActionResult> AddRole([FromRoute] string userEmail , [FromRoute] bool isAdmin )
     {
         if (string.IsNullOrEmpty(userEmail))
