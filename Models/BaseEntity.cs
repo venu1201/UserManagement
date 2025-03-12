@@ -1,7 +1,7 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
-namespace FoxHub.Models;
+namespace BackendApi.Models;
 public class BaseEntity
 {
     public int Id { get; set; }
