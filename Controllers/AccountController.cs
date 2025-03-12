@@ -128,7 +128,7 @@ public class AccountController : ControllerBase
                 if (!createResult.Succeeded)
                     return BadRequest(createResult.Errors);
 
-                await _userManager.AddToRoleAsync(user, "User"); // Assign default role
+                await _userManager.AddToRoleAsync(user, "User"); 
             }
 
             var jwtToken = GenerateJwtToken(user);
@@ -152,6 +152,11 @@ public class AccountController : ControllerBase
                     };
 
         var userRoles = _userManager.GetRolesAsync(user).Result;
+        if (userRoles.Any())
+        {
+            var rolesArray = System.Text.Json.JsonSerializer.Serialize(userRoles);
+            claims.Add(new Claim("roles", rolesArray));
+        }
         claims.AddRange(userRoles.Select(role => new Claim(ClaimTypes.Role, role)));
 
         var tokenDescriptor = new SecurityTokenDescriptor
