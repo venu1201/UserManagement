@@ -1,3 +1,4 @@
+using BackendApi.Models;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.IdentityModel.Tokens;
@@ -10,13 +11,13 @@ using System.Text.RegularExpressions;
 [ApiController]
 public class AccountController : ControllerBase
 {
-    private readonly SignInManager<IdentityUser> _signInManager;
-    private readonly UserManager<IdentityUser> _userManager;
+    private readonly SignInManager<User> _signInManager;
+    private readonly UserManager<User> _userManager;
     private readonly HttpClient _httpClient;
 
     public AccountController(
-        SignInManager<IdentityUser> signInManager,
-        UserManager<IdentityUser> userManager,
+        SignInManager<User> signInManager,
+        UserManager<User> userManager,
         HttpClient httpClient)
     {
         _signInManager = signInManager;
@@ -37,6 +38,7 @@ public class AccountController : ControllerBase
                 Id = user.Id,
                 Username = user.UserName,
                 Email = user.Email,
+                ProfilePicture = user.ProfilePicture,
                 Roles = roles
             });
         }
@@ -118,17 +120,25 @@ public class AccountController : ControllerBase
             var email = tokenInfo.Email;
             var username = email.Split('@')[0];
             username = Regex.Replace(username, @"[^a-zA-Z0-9_.]", "_");
-
+            
             var user = await _userManager.FindByEmailAsync(email);
             if (user == null)
             {
-                user = new IdentityUser { UserName = username, Email = email };
+                user = new User { UserName = username, Email = email,ProfilePicture = tokenInfo.Picture };
                 var createResult = await _userManager.CreateAsync(user);
 
                 if (!createResult.Succeeded)
                     return BadRequest(createResult.Errors);
 
                 await _userManager.AddToRoleAsync(user, "User"); 
+            }
+            else
+            {
+                if(user.ProfilePicture != tokenInfo.Picture)
+                {
+                    user.ProfilePicture = tokenInfo.Picture;
+                    await _userManager.UpdateAsync(user);
+                }
             }
 
             var jwtToken = GenerateJwtToken(user);
@@ -140,16 +150,17 @@ public class AccountController : ControllerBase
         }
     }
 
-    private string GenerateJwtToken(IdentityUser user)
+    private string GenerateJwtToken(User user)
     {
         var tokenHandler = new JwtSecurityTokenHandler();
         var key = Encoding.UTF8.GetBytes("<YOUR_SECRET_KEY>");
         var claims = new List<Claim>
-                    {
-                        new Claim(ClaimTypes.NameIdentifier, user.Id),
-                        new Claim(ClaimTypes.Name, user.UserName),
-                        new Claim(ClaimTypes.Email, user.Email)
-                    };
+                {
+                    new Claim(ClaimTypes.NameIdentifier, user.Id),
+                    new Claim(ClaimTypes.Name, user.UserName),
+                    new Claim(ClaimTypes.Email, user.Email),
+                    new Claim("ProfilePicture", user.ProfilePicture ?? "")  // Add profile picture to claims
+                };
 
         var userRoles = _userManager.GetRolesAsync(user).Result;
         if (userRoles.Any())
@@ -180,6 +191,6 @@ public class GoogleTokenInfo
     public string Email { get; set; }
     public string Expiry { get; set; }
     public string Scope { get; set; }
-
+    public string Picture {get;set;}
 
 }

@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace BackendApi.Data;
 
-public class ApplicationDbContext : IdentityDbContext<IdentityUser>
+public class ApplicationDbContext : IdentityDbContext<User>
 {
     public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : base(options) { }
 
