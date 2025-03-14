@@ -112,19 +112,29 @@ public class AccountController : ControllerBase
 
             var tokenInfo = await response.Content.ReadFromJsonAsync<GoogleTokenInfo>();
 
-            if (tokenInfo == null)
+            if (tokenInfo == null  || string.IsNullOrEmpty(tokenInfo.Email))
             {
                 return Unauthorized(new { Message = "Token does not belong to this app" });
             }
-
+            var userInfoUrl = "https://www.googleapis.com/oauth2/v3/userinfo";
+            _httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", tokenRequest);
+            var userInfoResponse = await _httpClient.GetAsync(userInfoUrl);
+            if (!userInfoResponse.IsSuccessStatusCode)
+            {
+                return Unauthorized(new { Message = "Could not retrieve user profile" });
+            }
+            var userInfo = await userInfoResponse.Content.ReadFromJsonAsync<GoogleUserInfo>();
+            if (userInfo == null)
+            {
+                return Unauthorized(new { Message = "Invalid user information" });
+            }
             var email = tokenInfo.Email;
             var username = email.Split('@')[0];
             username = Regex.Replace(username, @"[^a-zA-Z0-9_.]", "_");
-            
             var user = await _userManager.FindByEmailAsync(email);
             if (user == null)
             {
-                user = new User { UserName = username, Email = email,ProfilePicture = tokenInfo.Picture };
+                user = new User { UserName = username, Email = email,ProfilePicture = userInfo.Picture };
                 var createResult = await _userManager.CreateAsync(user);
 
                 if (!createResult.Succeeded)
@@ -134,9 +144,9 @@ public class AccountController : ControllerBase
             }
             else
             {
-                if(user.ProfilePicture != tokenInfo.Picture)
+                if(userInfo.Picture != null && user.ProfilePicture != userInfo.Picture)
                 {
-                    user.ProfilePicture = tokenInfo.Picture;
+                    user.ProfilePicture = userInfo.Picture;
                     await _userManager.UpdateAsync(user);
                 }
             }
@@ -186,11 +196,26 @@ public class AccountController : ControllerBase
 
 public class GoogleTokenInfo
 {
-    public string Issuer { get; set; }
-    public string Audience { get; set; }
-    public string Email { get; set; }
-    public string Expiry { get; set; }
+    public string Azp { get; set; }
+    public string Aud { get; set; }
+    public string Sub { get; set; }
     public string Scope { get; set; }
-    public string Picture {get;set;}
+    public string Exp { get; set; }
+    public string ExpiresIn { get; set; }
+    public string Email { get; set; }
+    public string EmailVerified { get; set; }
+    public string AccessType { get; set; }
 
+}
+
+public class GoogleUserInfo
+{
+    public string Sub { get; set; }
+    public string Name { get; set; }
+    public string GivenName { get; set; }
+    public string FamilyName { get; set; }
+    public string Picture { get; set; }
+    public string Email { get; set; }
+    public bool EmailVerified { get; set; }
+    public string Locale { get; set; }
 }
