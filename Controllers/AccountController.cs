@@ -154,16 +154,16 @@ public class AccountController : ControllerBase
             var jwtToken = GenerateJwtToken(user);
             return Ok(new { Message = "Token is valid", Token = jwtToken });
         }
-        catch
+        catch (Exception ex)
         {
-            return StatusCode(500, new { Message = "Error verifying token" });
+            return StatusCode(500, new { Message = "Error verifying token", Error = ex.Message });
         }
     }
 
     private string GenerateJwtToken(User user)
     {
         var tokenHandler = new JwtSecurityTokenHandler();
-        var key = Encoding.UTF8.GetBytes("<YOUR_SECRET_KEY>");
+        var key = Encoding.UTF8.GetBytes("YourSuperLongSecretKeyHereThatIsAtLeast16Characters");
         var claims = new List<Claim>
                 {
                     new Claim(ClaimTypes.NameIdentifier, user.Id),

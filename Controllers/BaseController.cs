@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using BackendApi.Data;
 using BackendApi.Models;
 using Microsoft.AspNetCore.Mvc;
@@ -78,10 +79,11 @@ public abstract class BaseController<T> : ControllerBase where T : BaseEntity
         var existingEntity = entity.Id > 0
             ? await GetEntityAsync(item => item.Id == entity.Id)
             : null;
+        var userEmail = User?.FindFirst(ClaimTypes.Email)?.Value;
 
         if (existingEntity == null)
         {
-            entity.CreatedBy = User?.Identity?.Name ?? "Unknown";
+            entity.CreatedBy = userEmail ?? "Unknown";
             entity.CreatedOn = DateTime.UtcNow;
 
             await _dbSet.AddAsync(entity);
@@ -90,7 +92,7 @@ public abstract class BaseController<T> : ControllerBase where T : BaseEntity
         {
             _dbContext.Entry(existingEntity).CurrentValues.SetValues(entity);
 
-            existingEntity.ModifiedBy = User?.Identity?.Name ?? "Unknown";
+            existingEntity.ModifiedBy = userEmail ?? "Unknown";
             existingEntity.ModifiedOn = DateTime.UtcNow;
 
             _dbSet.Update(existingEntity);

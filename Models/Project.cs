@@ -15,6 +15,9 @@ public class Project : BaseEntity
 
     [MaxLength(500)] 
     public required string Path { get; set; }
-
     public bool IsExternalProject { get; set; } = true;
+    [MaxLength(20)] 
+    public string Status {get;set;} = "InProgress";
+    [MaxLength(1000)] 
+    public string? Tags {get;set;} 
 }
