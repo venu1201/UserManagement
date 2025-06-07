@@ -45,6 +45,28 @@ public class AccountController : ControllerBase
 
         return Ok(userList);
     }
+    [HttpGet("[action]")]
+    public async Task<IActionResult> GetGameUsers()
+    {
+        var users = _userManager.Users.Where(item=>item.GameName!=null).ToList();
+        var userList = new List<object>();
+
+        foreach (var user in users)
+        {
+            var roles = await _userManager.GetRolesAsync(user);
+            userList.Add(new
+            {
+                Id = user.Id,
+                Username = user.UserName,
+                Email = user.Email,
+                GameName = user.GameName,
+                ProfilePicture = user.ProfilePicture,
+                Roles = roles
+            });
+        }
+
+        return Ok(userList);
+    }
     [HttpPost("[action]/{userEmail}/{isAdmin:bool}")]
     public async Task<IActionResult> AddRole([FromRoute] string userEmail , [FromRoute] bool isAdmin )
     {
