@@ -26,6 +26,7 @@ public class RealCricketController : ControllerBase
         var tournaments = await _dbContext.Tournament
             .Include(item => item.Matches)
             .Where(t => t.IsActive)
+            .OrderByDescending(t => t.Id)
             .ToListAsync();
         return Ok(tournaments);
     }
@@ -94,7 +95,11 @@ public class RealCricketController : ControllerBase
                 .OrderByDescending(m => m.MatchNumber)
                 .Take(4)
                 .ToList(),
-            QualificationChances = GenerateQualificationChances(teamStandings),
+            QualificationChances = GenerateQualificationChances(
+                                        teamStandings,
+                                        tournament.Matches.Where(m => string.IsNullOrEmpty(m.WinnerId)).ToList(),
+                                        tournament.Matches.ToList()
+                                    ),
             Highlights = GenerateHighlights(tournament.Matches)
         };
 
@@ -219,15 +224,188 @@ public class RealCricketController : ControllerBase
         return (rankedStandings, topBatsmen, topBowlers);
     }
 
-    private List<QualificationChance> GenerateQualificationChances(List<TeamStanding> standings)
+    private List<QualificationChance> GenerateQualificationChances(List<TeamStanding> standings, List<Match> remainingMatches, List<Match> allMatches)
     {
-        return standings.Select(standing => new QualificationChance
+        return standings.Select(standing =>
         {
-            Team = standing.Team,
-            Top2Chance = CalculateQualificationChance(standing.Rank, standing.Points, true),
-            Top4Chance = CalculateQualificationChance(standing.Rank, standing.Points, false),
-            Status = GetQualificationStatus(CalculateQualificationChance(standing.Rank, standing.Points, false))
+            var chances = CalculateQualificationChance(standing, standings, remainingMatches, allMatches);
+            return new QualificationChance
+            {
+                Team = standing.Team,
+                Top2Chance = chances.top2,
+                Top4Chance = chances.top4,
+                Status = GetQualificationStatus(chances.top4)
+            };
         }).ToList();
+    }
+
+    private (int top2, int top4) CalculateQualificationChance(TeamStanding targetTeam, List<TeamStanding> allStandings, List<Match> remainingMatches, List<Match> allMatches)
+    {
+        const int simulations = 5000;
+        int top2Count = 0;
+        int top4Count = 0;
+        var random = new Random();
+
+        for (int sim = 0; sim < simulations; sim++)
+        {
+            var simulatedStandings = allStandings.Select(s =>
+            {
+                var teamMatches = allMatches.Where(m => !string.IsNullOrEmpty(m.WinnerId) &&
+                                                       (m.Player1Id == s.Team || m.Player2Id == s.Team)).ToList();
+
+                int totalRunsFor = 0, totalRunsAgainst = 0, totalBallsFaced = 0, totalBallsBowled = 0;
+
+                foreach (var match in teamMatches)
+                {
+                    if (match.Player1Id == s.Team)
+                    {
+                        totalRunsFor += match.Player1Score;
+                        totalRunsAgainst += match.Player2Score;
+                        totalBallsFaced += match.Player1Balls;
+                        totalBallsBowled += match.Player2Balls;
+                    }
+                    else
+                    {
+                        totalRunsFor += match.Player2Score;
+                        totalRunsAgainst += match.Player1Score;
+                        totalBallsFaced += match.Player2Balls;
+                        totalBallsBowled += match.Player1Balls;
+                    }
+                }
+
+                return new
+                {
+                    Team = s.Team,
+                    Points = s.Points,
+                    RunsFor = totalRunsFor,
+                    RunsAgainst = totalRunsAgainst,
+                    BallsFaced = totalBallsFaced,
+                    BallsBowled = totalBallsBowled
+                };
+            }).ToList();
+
+            foreach (var match in remainingMatches)
+            {
+                var team1Index = simulatedStandings.FindIndex(s => s.Team == match.Player1Id);
+                var team2Index = simulatedStandings.FindIndex(s => s.Team == match.Player2Id);
+
+                if (team1Index >= 0 && team2Index >= 0)
+                {
+                    var team1Score = SimulateInningsScore(random);
+                    var team2Score = SimulateInningsScore(random);
+                    var team1Balls = 30;
+                    var team2Balls = team1Score >= team2Score ? 30 : random.Next(6, 31);
+
+                    if (team2Score > team1Score)
+                    {
+                        team2Balls = random.Next(18, 30);
+                    }
+
+                    var team1 = simulatedStandings[team1Index];
+                    var team2 = simulatedStandings[team2Index];
+
+                    int team1Points = 0, team2Points = 0;
+                    if (team1Score > team2Score)
+                    {
+                        team1Points = 2; // Team1 wins
+                    }
+                    else if (team2Score > team1Score)
+                    {
+                        team2Points = 2;
+                    }
+                    else
+                    {
+                        team1Points = team2Points = 1;
+                    }
+
+                    var updatedTeam1 = new
+                    {
+                        team1.Team,
+                        Points = team1.Points + team1Points,
+                        RunsFor = team1.RunsFor + team1Score,
+                        RunsAgainst = team1.RunsAgainst + team2Score,
+                        BallsFaced = team1.BallsFaced + team1Balls,
+                        BallsBowled = team1.BallsBowled + team2Balls
+                    };
+
+                    var updatedTeam2 = new
+                    {
+                        team2.Team,
+                        Points = team2.Points + team2Points,
+                        RunsFor = team2.RunsFor + team2Score,
+                        RunsAgainst = team2.RunsAgainst + team1Score,
+                        BallsFaced = team2.BallsFaced + team2Balls,
+                        BallsBowled = team2.BallsBowled + team1Balls
+                    };
+
+                    simulatedStandings[team1Index] = updatedTeam1;
+                    simulatedStandings[team2Index] = updatedTeam2;
+                }
+            }
+
+            var finalStandings = simulatedStandings
+                .Select(s => new
+                {
+                    s.Team,
+                    s.Points,
+                    NetRunRate = CalculateNetRunRate(s.RunsFor, s.RunsAgainst, s.BallsFaced, s.BallsBowled)
+                })
+                .OrderByDescending(s => s.Points)
+                .ThenByDescending(s => s.NetRunRate)
+                .ToList();
+
+            var targetPosition = finalStandings.FindIndex(s => s.Team == targetTeam.Team);
+            if (targetPosition < 2) top2Count++;
+            if (targetPosition < 4) top4Count++;
+        }
+
+        return (
+            top2: (int)Math.Round((double)top2Count / simulations * 100),
+            top4: (int)Math.Round((double)top4Count / simulations * 100)
+        );
+    }
+
+    private int SimulateInningsScore(Random random)
+    {
+        var baseScore = random.Next(35, 56);
+        var outlierChance = random.NextDouble();
+
+        if (outlierChance < 0.1)
+        {
+            return random.Next(20, 35);
+        }
+        else if (outlierChance > 0.9)
+        {
+            return random.Next(55, 71);
+        }
+
+        return baseScore;
+    }
+
+    private double CalculateNetRunRate(int runsFor, int runsAgainst, int ballsFaced, int ballsBowled)
+    {
+        if (ballsFaced == 0 || ballsBowled == 0) return 0.0;
+
+        double oversFaced = ballsFaced / 6.0;
+        double oversBowled = ballsBowled / 6.0;
+
+        double runRateFor = runsFor / oversFaced;
+        double runRateAgainst = runsAgainst / oversBowled;
+
+        return Math.Round(runRateFor - runRateAgainst, 3);
+    }
+
+    private string GetQualificationStatus(int top4Chance)
+    {
+        return top4Chance switch
+        {
+            >= 90 => "Almost Certain",
+            >= 70 => "Very Likely",
+            >= 50 => "Good Chance",
+            >= 30 => "Possible",
+            >= 15 => "Unlikely",
+            _ => "Very Unlikely"
+        };
     }
 
     private TournamentHighlights GenerateHighlights(List<Match> matches)
@@ -273,47 +451,6 @@ public class RealCricketController : ControllerBase
         };
     }
 
-    private int CalculateQualificationChance(int rank, int points, bool isTop2)
-    {
-        if (isTop2)
-        {
-            return rank switch
-            {
-                1 => 95,
-                2 => 85,
-                3 => 45,
-                4 => 25,
-                5 => 5,
-                _ => 1
-            };
-        }
-        else
-        {
-            return rank switch
-            {
-                1 => 99,
-                2 => 98,
-                3 => 90,
-                4 => 75,
-                5 => 35,
-                _ => 15
-            };
-        }
-    }
-
-    private string GetQualificationStatus(int top4Chance)
-    {
-        return top4Chance switch
-        {
-            >= 90 => "Almost Certain",
-            >= 70 => "Very Likely",
-            >= 50 => "Good Chance",
-            >= 30 => "Possible",
-            >= 15 => "Unlikely",
-            _ => "Very Unlikely"
-        };
-    }
-
     [HttpPost("[action]")]
     public async Task<IActionResult> CreateTournament([FromBody] Tournament tournament)
     {
@@ -338,7 +475,7 @@ public class RealCricketController : ControllerBase
         _dbContext.Tournament.Add(tournament);
         await _dbContext.SaveChangesAsync();
 
-        var matches = GenerateRoundRobinMatches(gameNames, tournament.Id);
+        var matches = GenerateRoundRobinMatches(gameNames, tournament.Id, tournament.NumberOfQualifications);
         _dbContext.Match.AddRange(matches);
         await _dbContext.SaveChangesAsync();
 
@@ -373,11 +510,46 @@ public class RealCricketController : ControllerBase
         match.WinnerId = updateMatch.WinnerId;
         match.TossWinnerId = updateMatch.TossWinnerId;
         match.TossWinnerChoice = updateMatch.TossWinnerChoice;
-        match.Description = updateMatch.Description;
+        if (updateMatch.Description.Length == 0 || updateMatch.Description == null)
+        {
+            if (!string.IsNullOrEmpty(match.WinnerId))
+            {
+                string winnerName = match.WinnerId == match.Player1Id ? match.Player1Id : match.Player2Id;
 
+                var winnerWonToss = match.TossWinnerId == match.WinnerId;
+                var tossWinnerChoseToBat = match.TossWinnerChoice?.ToLower() == "bat";
+
+                bool wonByRuns;
+                if (winnerWonToss)
+                {
+                    wonByRuns = tossWinnerChoseToBat;
+                }
+                else
+                {
+                    wonByRuns = !tossWinnerChoseToBat;
+                }
+
+                if (wonByRuns)
+                {
+                    var margin = Math.Abs(match.Player1Score - match.Player2Score);
+                    match.Description = $"{winnerName} won by {margin} runs";
+                }
+                else
+                {
+                    var wicketsLost = match.WinnerId == match.Player1Id ? match.Player1Wickets : match.Player2Wickets;
+                    var wicketsRemaining = 10 - wicketsLost;
+                    match.Description = $"{winnerName} won by {wicketsRemaining} wickets";
+                }
+            }
+            else
+            {
+                match.Description = "Match in progress";
+            }
+        }
+        else
+            match.Description = updateMatch.Description;
         await _dbContext.SaveChangesAsync();
 
-        // Load the tournament with its matches
         var tournament = await _dbContext.Tournament
             .Include(t => t.Matches)
             .FirstOrDefaultAsync(t => t.Id == match.TournamentId);
@@ -391,14 +563,12 @@ public class RealCricketController : ControllerBase
             .Select(p => p.Trim())
             .ToList() ?? new List<string>();
 
-        // Check if all league matches are complete
         var leagueMatches = tournament.Matches.Where(m => m.MatchType == "League").ToList();
         if (leagueMatches.All(m => !string.IsNullOrEmpty(m.WinnerId)))
         {
             var (teamStandings, _, _) = GeneratePlayerStats(tournament.Matches, players);
             await UpdatePlayoffMatches(tournament, teamStandings, match);
         }
-        // Check if a playoff match was updated
         else if (match.MatchType != "League" && !string.IsNullOrEmpty(match.WinnerId))
         {
             var (teamStandings, _, _) = GeneratePlayerStats(tournament.Matches, players);
@@ -410,16 +580,16 @@ public class RealCricketController : ControllerBase
 
     private async Task UpdatePlayoffMatches(Tournament tournament, List<TeamStanding> teamStandings, Match updatedMatch)
     {
-        var qualifiers = Math.Min(teamStandings.Count, 4);
-        if (teamStandings.Count == 2)
-            qualifiers = 2;
-        else if (teamStandings.Count == 3)
-            qualifiers = 3;
+        if (tournament == null || teamStandings == null || updatedMatch == null)
+        {
+            return;
+        }
+
+        var qualifiers = tournament.NumberOfQualifications;
 
         var rankedTeams = teamStandings.OrderBy(s => s.Rank).ToList();
         var matches = tournament.Matches.Where(m => m.MatchType != "League").ToList();
 
-        // If all league matches are complete, initialize playoff matches
         var leagueMatches = tournament.Matches.Where(m => m.MatchType == "League").ToList();
         if (leagueMatches.All(m => !string.IsNullOrEmpty(m.WinnerId)) && updatedMatch.MatchType == "League")
         {
@@ -446,12 +616,12 @@ public class RealCricketController : ControllerBase
                 if (eliminator != null)
                 {
                     eliminator.Player1Id = rankedTeams[2].Team;
-                    eliminator.Player2Id = "TBD"; // Loser of Q1
+                    eliminator.Player2Id = "TBD";
                 }
                 if (finalMatch != null)
                 {
-                    finalMatch.Player1Id = "TBD"; // Winner of Q1
-                    finalMatch.Player2Id = "TBD"; // Winner of Eliminator
+                    finalMatch.Player1Id = "TBD";
+                    finalMatch.Player2Id = "TBD";
                 }
             }
             else if (qualifiers == 4)
@@ -473,17 +643,16 @@ public class RealCricketController : ControllerBase
                 }
                 if (q2 != null)
                 {
-                    q2.Player1Id = "TBD"; // Loser of Q1
-                    q2.Player2Id = "TBD"; // Winner of Eliminator
+                    q2.Player1Id = "TBD";
+                    q2.Player2Id = "TBD";
                 }
                 if (finalMatch != null)
                 {
-                    finalMatch.Player1Id = "TBD"; // Winner of Q1
-                    finalMatch.Player2Id = "TBD"; // Winner of Q2
+                    finalMatch.Player1Id = "TBD";
+                    finalMatch.Player2Id = "TBD";
                 }
             }
         }
-        // Handle playoff match updates
         else if (updatedMatch.MatchType != "League" && !string.IsNullOrEmpty(updatedMatch.WinnerId))
         {
             var winner = updatedMatch.WinnerId;
@@ -498,11 +667,11 @@ public class RealCricketController : ControllerBase
 
                     if (eliminator != null)
                     {
-                        eliminator.Player2Id = loser; // Loser of Q1
+                        eliminator.Player2Id = loser;
                     }
                     if (finalMatch != null)
                     {
-                        finalMatch.Player1Id = winner; // Winner of Q1
+                        finalMatch.Player1Id = winner;
                     }
                 }
                 else if (updatedMatch.MatchType == "Eliminator")
@@ -510,7 +679,7 @@ public class RealCricketController : ControllerBase
                     var finalMatch = matches.FirstOrDefault(m => m.MatchType == "Final");
                     if (finalMatch != null)
                     {
-                        finalMatch.Player2Id = winner; // Winner of Eliminator
+                        finalMatch.Player2Id = winner;
                     }
                 }
             }
@@ -523,11 +692,11 @@ public class RealCricketController : ControllerBase
 
                     if (q2 != null)
                     {
-                        q2.Player1Id = loser; // Loser of Q1
+                        q2.Player1Id = loser;
                     }
                     if (finalMatch != null)
                     {
-                        finalMatch.Player1Id = winner; // Winner of Q1
+                        finalMatch.Player1Id = winner;
                     }
                 }
                 else if (updatedMatch.MatchType == "Eliminator")
@@ -535,7 +704,7 @@ public class RealCricketController : ControllerBase
                     var q2 = matches.FirstOrDefault(m => m.MatchType == "Qualifier 2");
                     if (q2 != null)
                     {
-                        q2.Player2Id = winner; // Winner of Eliminator
+                        q2.Player2Id = winner;
                     }
                 }
                 else if (updatedMatch.MatchType == "Qualifier 2")
@@ -543,8 +712,16 @@ public class RealCricketController : ControllerBase
                     var finalMatch = matches.FirstOrDefault(m => m.MatchType == "Final");
                     if (finalMatch != null)
                     {
-                        finalMatch.Player2Id = winner; // Winner of Q2
+                        finalMatch.Player2Id = winner;
                     }
+                }
+            }
+
+            if (updatedMatch.MatchType == "Final" && !string.IsNullOrEmpty(updatedMatch.WinnerId))
+            {
+                if (tournament.Status != "Completed")
+                {
+                    tournament.Status = "Completed";
                 }
             }
         }
@@ -552,7 +729,7 @@ public class RealCricketController : ControllerBase
         await _dbContext.SaveChangesAsync();
     }
 
-    private List<Match> GenerateRoundRobinMatches(List<string> playerIds, int tournamentId)
+    private List<Match> GenerateRoundRobinMatches(List<string> playerIds, int tournamentId, int NumberOfQualifications)
     {
         var matches = new List<Match>();
         var matchups = new List<(string, string)>();
@@ -565,72 +742,26 @@ public class RealCricketController : ControllerBase
             }
         }
 
-        var rnd = new Random();
-        matchups = matchups.OrderBy(_ => rnd.Next()).ToList();
+        List<(string, string)> finalMatchOrder;
 
-        var finalMatchOrder = new List<(string, string)>();
-        var usedPlayers = new HashSet<string>();
-        int consecutiveLimit = playerIds.Count > 4 ? 2 : 0;
-
-        while (matchups.Any())
+        if (playerIds.Count <= 4)
         {
-            bool matchFound = false;
+            var rnd = new Random();
+            finalMatchOrder = matchups.OrderBy(_ => rnd.Next()).ToList();
+        }
+        else
+        {
+            finalMatchOrder = ScheduleMatchesWithBacktracking(matchups, playerIds.Count);
 
-            for (int i = 0; i < matchups.Count; i++)
+            if (finalMatchOrder == null || finalMatchOrder.Count == 0)
             {
-                var (p1, p2) = matchups[i];
-
-                if (playerIds.Count > 4 && (usedPlayers.Contains(p1) || usedPlayers.Contains(p2)))
-                {
-                    continue;
-                }
-
-                var players = rnd.Next(2) == 0 ? (p1, p2) : (p2, p1);
-                finalMatchOrder.Add(players);
-
-                if (playerIds.Count > 4)
-                {
-                    usedPlayers.Add(players.Item1);
-                    usedPlayers.Add(players.Item2);
-
-                    if (finalMatchOrder.Count >= consecutiveLimit)
-                    {
-                        var oldMatch = finalMatchOrder[finalMatchOrder.Count - consecutiveLimit];
-                        usedPlayers.Remove(oldMatch.Item1);
-                        usedPlayers.Remove(oldMatch.Item2);
-                    }
-                }
-
-                matchups.RemoveAt(i);
-                matchFound = true;
-                break;
-            }
-
-            if (!matchFound && matchups.Any())
-            {
-                var (p1, p2) = matchups[0];
-                var players = rnd.Next(2) == 0 ? (p1, p2) : (p2, p1);
-                finalMatchOrder.Add(players);
-
-                if (playerIds.Count > 4)
-                {
-                    usedPlayers.Add(players.Item1);
-                    usedPlayers.Add(players.Item2);
-
-                    if (finalMatchOrder.Count >= consecutiveLimit)
-                    {
-                        var oldMatch = finalMatchOrder[finalMatchOrder.Count - consecutiveLimit];
-                        usedPlayers.Remove(oldMatch.Item1);
-                        usedPlayers.Remove(oldMatch.Item2);
-                    }
-                }
-
-                matchups.RemoveAt(0);
+                var rnd = new Random();
+                finalMatchOrder = matchups.OrderBy(_ => rnd.Next()).ToList();
             }
         }
 
         int matchNumber = 1;
-        // Add league matches
+
         foreach (var (p1, p2) in finalMatchOrder)
         {
             matches.Add(new Match
@@ -651,164 +782,115 @@ public class RealCricketController : ControllerBase
             });
         }
 
-        // Determine number of qualifiers (default to 4, adjust based on player count)
-        int qualifiers = Math.Min(playerIds.Count, 4);
-        if (playerIds.Count == 2)
-            qualifiers = 2;
-        else if (playerIds.Count == 3)
-            qualifiers = 3;
+        AddPlayoffMatches(matches, tournamentId, ref matchNumber, NumberOfQualifications);
 
-        // Add playoff matches based on number of qualifiers
+        return matches;
+    }
+
+    private List<(string, string)> ScheduleMatchesWithBacktracking(List<(string, string)> matchups, int playerCount)
+    {
+        var schedule = new List<(string, string)>();
+        var usedMatchups = new bool[matchups.Count];
+        var rnd = new Random();
+
+        var shuffledIndices = Enumerable.Range(0, matchups.Count).OrderBy(_ => rnd.Next()).ToList();
+
+        if (BacktrackSchedule(matchups, shuffledIndices, schedule, usedMatchups, 0))
+        {
+            return schedule;
+        }
+
+        return new List<(string, string)>();
+    }
+
+    private bool BacktrackSchedule(List<(string, string)> matchups, List<int> shuffledIndices,
+        List<(string, string)> schedule, bool[] usedMatchups, int currentIndex)
+    {
+        if (schedule.Count == matchups.Count)
+        {
+            return true;
+        }
+
+        for (int i = 0; i < shuffledIndices.Count; i++)
+        {
+            int matchupIndex = shuffledIndices[i];
+
+            if (usedMatchups[matchupIndex])
+                continue;
+
+            var matchup = matchups[matchupIndex];
+
+            if (IsValidPlacement(schedule, matchup))
+            {
+                schedule.Add(matchup);
+                usedMatchups[matchupIndex] = true;
+
+                if (BacktrackSchedule(matchups, shuffledIndices, schedule, usedMatchups, currentIndex + 1))
+                {
+                    return true;
+                }
+
+                schedule.RemoveAt(schedule.Count - 1);
+                usedMatchups[matchupIndex] = false;
+            }
+        }
+
+        return false;
+    }
+
+    private bool IsValidPlacement(List<(string, string)> schedule, (string, string) newMatchup)
+    {
+        if (schedule.Count == 0)
+            return true;
+
+        var lastMatch = schedule[schedule.Count - 1];
+
+        return !(newMatchup.Item1 == lastMatch.Item1 || newMatchup.Item1 == lastMatch.Item2 ||
+                 newMatchup.Item2 == lastMatch.Item1 || newMatchup.Item2 == lastMatch.Item2);
+    }
+
+    private void AddPlayoffMatches(List<Match> matches, int tournamentId, ref int matchNumber, int qualifiers)
+    {
         if (qualifiers >= 2)
         {
             if (qualifiers == 2)
             {
-                // Only Final for 2 qualifiers
-                matches.Add(new Match
-                {
-                    TournamentId = tournamentId,
-                    MatchNumber = matchNumber++,
-                    Player1Id = "TBD",
-                    Player2Id = "TBD",
-                    MatchType = "Final",
-                    CreatedOn = DateTime.Now,
-                    IsActive = true,
-                    Player1Score = 0,
-                    Player2Score = 0,
-                    Player1Balls = 0,
-                    Player2Balls = 0,
-                    Player1Wickets = 0,
-                    Player2Wickets = 0,
-                });
+                matches.Add(CreatePlayoffMatch(tournamentId, matchNumber++, "Final"));
             }
             else if (qualifiers == 3)
             {
-                // Q1: 1st vs 2nd
-                matches.Add(new Match
-                {
-                    TournamentId = tournamentId,
-                    MatchNumber = matchNumber++,
-                    Player1Id = "TBD",
-                    Player2Id = "TBD",
-                    MatchType = "Qualifier 1",
-                    CreatedOn = DateTime.Now,
-                    IsActive = true,
-                    Player1Score = 0,
-                    Player2Score = 0,
-                    Player1Balls = 0,
-                    Player2Balls = 0,
-                    Player1Wickets = 0,
-                    Player2Wickets = 0,
-                });
-                // Eliminator: 3rd vs Loser of Q1
-                matches.Add(new Match
-                {
-                    TournamentId = tournamentId,
-                    MatchNumber = matchNumber++,
-                    Player1Id = "TBD",
-                    Player2Id = "TBD",
-                    MatchType = "Eliminator",
-                    CreatedOn = DateTime.Now,
-                    IsActive = true,
-                    Player1Score = 0,
-                    Player2Score = 0,
-                    Player1Balls = 0,
-                    Player2Balls = 0,
-                    Player1Wickets = 0,
-                    Player2Wickets = 0,
-                });
-                // Final: Winner of Q1 vs Winner of Eliminator
-                matches.Add(new Match
-                {
-                    TournamentId = tournamentId,
-                    MatchNumber = matchNumber++,
-                    Player1Id = "TBD",
-                    Player2Id = "TBD",
-                    MatchType = "Final",
-                    CreatedOn = DateTime.Now,
-                    IsActive = true,
-                    Player1Score = 0,
-                    Player2Score = 0,
-                    Player1Balls = 0,
-                    Player2Balls = 0,
-                    Player1Wickets = 0,
-                    Player2Wickets = 0,
-                });
+                matches.Add(CreatePlayoffMatch(tournamentId, matchNumber++, "Qualifier 1"));
+                matches.Add(CreatePlayoffMatch(tournamentId, matchNumber++, "Eliminator"));
+                matches.Add(CreatePlayoffMatch(tournamentId, matchNumber++, "Final"));
             }
             else if (qualifiers == 4)
             {
-                // Q1: 1st vs 2nd
-                matches.Add(new Match
-                {
-                    TournamentId = tournamentId,
-                    MatchNumber = matchNumber++,
-                    Player1Id = "TBD",
-                    Player2Id = "TBD",
-                    MatchType = "Qualifier 1",
-                    CreatedOn = DateTime.Now,
-                    IsActive = true,
-                    Player1Score = 0,
-                    Player2Score = 0,
-                    Player1Balls = 0,
-                    Player2Balls = 0,
-                    Player1Wickets = 0,
-                    Player2Wickets = 0,
-                });
-                // Eliminator: 3rd vs 4th
-                matches.Add(new Match
-                {
-                    TournamentId = tournamentId,
-                    MatchNumber = matchNumber++,
-                    Player1Id = "TBD",
-                    Player2Id = "TBD",
-                    MatchType = "Eliminator",
-                    CreatedOn = DateTime.Now,
-                    IsActive = true,
-                    Player1Score = 0,
-                    Player2Score = 0,
-                    Player1Balls = 0,
-                    Player2Balls = 0,
-                    Player1Wickets = 0,
-                    Player2Wickets = 0,
-                });
-                // Q2: Loser of Q1 vs Winner of Eliminator
-                matches.Add(new Match
-                {
-                    TournamentId = tournamentId,
-                    MatchNumber = matchNumber++,
-                    Player1Id = "TBD",
-                    Player2Id = "TBD",
-                    MatchType = "Qualifier 2",
-                    CreatedOn = DateTime.Now,
-                    IsActive = true,
-                    Player1Score = 0,
-                    Player2Score = 0,
-                    Player1Balls = 0,
-                    Player2Balls = 0,
-                    Player1Wickets = 0,
-                    Player2Wickets = 0,
-                });
-                // Final: Winner of Q1 vs Winner of Q2
-                matches.Add(new Match
-                {
-                    TournamentId = tournamentId,
-                    MatchNumber = matchNumber++,
-                    Player1Id = "TBD",
-                    Player2Id = "TBD",
-                    MatchType = "Final",
-                    CreatedOn = DateTime.Now,
-                    IsActive = true,
-                    Player1Score = 0,
-                    Player2Score = 0,
-                    Player1Balls = 0,
-                    Player2Balls = 0,
-                    Player1Wickets = 0,
-                    Player2Wickets = 0,
-                });
+                matches.Add(CreatePlayoffMatch(tournamentId, matchNumber++, "Qualifier 1"));
+                matches.Add(CreatePlayoffMatch(tournamentId, matchNumber++, "Eliminator"));
+                matches.Add(CreatePlayoffMatch(tournamentId, matchNumber++, "Qualifier 2"));
+                matches.Add(CreatePlayoffMatch(tournamentId, matchNumber++, "Final"));
             }
         }
+    }
 
-        return matches;
+    private Match CreatePlayoffMatch(int tournamentId, int matchNumber, string matchType)
+    {
+        return new Match
+        {
+            TournamentId = tournamentId,
+            MatchNumber = matchNumber,
+            Player1Id = "TBD",
+            Player2Id = "TBD",
+            MatchType = matchType,
+            CreatedOn = DateTime.Now,
+            IsActive = true,
+            Player1Score = 0,
+            Player2Score = 0,
+            Player1Balls = 0,
+            Player2Balls = 0,
+            Player1Wickets = 0,
+            Player2Wickets = 0,
+        };
     }
 }
 
