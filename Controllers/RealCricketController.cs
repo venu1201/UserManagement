@@ -80,7 +80,7 @@ public class RealCricketController : ControllerBase
                                                    .Select(p => p.Trim())
                                                    .ToList() ?? new List<string>();
 
-        var (teamStandings, topBatsmen, topBowlers) = GeneratePlayerStats(tournament.Matches, players,tournament.NumberOfQualifications);
+        var (teamStandings, topBatsmen, topBowlers) = GeneratePlayerStats(tournament.Matches, players, tournament.NumberOfQualifications);
 
         var dashboardData = new DashboardData
         {
@@ -112,7 +112,7 @@ public class RealCricketController : ControllerBase
         return Ok(dashboardData);
     }
 
-    private (List<TeamStanding>, List<TopBatsman>, List<TopBowler>) GeneratePlayerStats(List<Match> matches, List<string> players,int numberOfQualifications)
+    private (List<TeamStanding>, List<TopBatsman>, List<TopBowler>) GeneratePlayerStats(List<Match> matches, List<string> players, int numberOfQualifications)
     {
         var teamStandings = new List<TeamStanding>();
         var battingStats = new List<(string Name, int Runs, int Balls, int Matches, int Innings)>();
@@ -120,11 +120,14 @@ public class RealCricketController : ControllerBase
 
         foreach (var player in players)
         {
-            var playerMatches = matches.Where(m =>
+            var playerLeagueMatches = matches.Where(m =>
                 (m.Player1Id == player || m.Player2Id == player) && m.MatchType == "League").ToList();
 
-            var won = playerMatches.Count(m => m.WinnerId == player);
-            var lost = playerMatches.Where(item => item.WinnerId != null).ToList().Count - won;
+            var playerAllMatches = matches.Where(m =>
+                m.Player1Id == player || m.Player2Id == player).ToList();
+
+            var won = playerLeagueMatches.Count(m => m.WinnerId == player);
+            var lost = playerLeagueMatches.Where(item => item.WinnerId != null).ToList().Count - won;
             var points = won * 2;
 
             var totalRunsScored = 0;
@@ -139,15 +142,10 @@ public class RealCricketController : ControllerBase
             var bowlingRunsConceded = 0;
             var bowlingBalls = 0;
 
-            foreach (var match in playerMatches)
+            foreach (var match in playerAllMatches)
             {
                 if (match.Player1Id == player)
                 {
-                    totalRunsScored += match.Player1Score;
-                    totalBallsFaced += match.Player1Balls;
-                    totalRunsConceded += match.Player2Score;
-                    totalBallsBowled += match.Player2Balls;
-
                     battingRuns += match.Player1Score;
                     battingBalls += match.Player1Balls;
                     battingInnings++;
@@ -158,11 +156,6 @@ public class RealCricketController : ControllerBase
                 }
                 else
                 {
-                    totalRunsScored += match.Player2Score;
-                    totalBallsFaced += match.Player2Balls;
-                    totalRunsConceded += match.Player1Score;
-                    totalBallsBowled += match.Player1Balls;
-
                     battingRuns += match.Player2Score;
                     battingBalls += match.Player2Balls;
                     battingInnings++;
@@ -173,6 +166,24 @@ public class RealCricketController : ControllerBase
                 }
             }
 
+            foreach (var match in playerLeagueMatches)
+            {
+                if (match.Player1Id == player)
+                {
+                    totalRunsScored += match.Player1Score;
+                    totalBallsFaced += match.Player1Balls;
+                    totalRunsConceded += match.Player2Score;
+                    totalBallsBowled += match.Player2Balls;
+                }
+                else
+                {
+                    totalRunsScored += match.Player2Score;
+                    totalBallsFaced += match.Player2Balls;
+                    totalRunsConceded += match.Player1Score;
+                    totalBallsBowled += match.Player1Balls;
+                }
+            }
+
             var runRate = totalBallsFaced > 0 ? (double)totalRunsScored / totalBallsFaced * 6 : 0;
             var concededRate = totalBallsBowled > 0 ? (double)totalRunsConceded / totalBallsBowled * 6 : 0;
             var nrr = runRate - concededRate;
@@ -180,15 +191,15 @@ public class RealCricketController : ControllerBase
             teamStandings.Add(new TeamStanding
             {
                 Team = player,
-                Played = playerMatches.Where(item => item.WinnerId != null).ToList().Count,
+                Played = playerLeagueMatches.Where(item => item.WinnerId != null).ToList().Count,
                 Won = won,
                 Lost = lost,
                 Points = points,
                 NetRunRate = Math.Round(nrr, 2).ToString("+0.00;-0.00;0.00")
             });
 
-            battingStats.Add((player, battingRuns, battingBalls, playerMatches.Count, battingInnings));
-            bowlingStats.Add((player, bowlingWickets, bowlingRunsConceded, bowlingBalls, playerMatches.Count));
+            battingStats.Add((player, battingRuns, battingBalls, playerAllMatches.Count, battingInnings));
+            bowlingStats.Add((player, bowlingWickets, bowlingRunsConceded, bowlingBalls, playerAllMatches.Count));
         }
 
         var rankedStandings = teamStandings
@@ -689,12 +700,12 @@ public class RealCricketController : ControllerBase
         var leagueMatches = tournament.Matches.Where(m => m.MatchType == "League").ToList();
         if (leagueMatches.All(m => !string.IsNullOrEmpty(m.WinnerId)))
         {
-            var (teamStandings, _, _) = GeneratePlayerStats(tournament.Matches, players,tournament.NumberOfQualifications);
+            var (teamStandings, _, _) = GeneratePlayerStats(tournament.Matches, players, tournament.NumberOfQualifications);
             await UpdatePlayoffMatches(tournament, teamStandings, match);
         }
         else if (match.MatchType != "League" && !string.IsNullOrEmpty(match.WinnerId))
         {
-            var (teamStandings, _, _) = GeneratePlayerStats(tournament.Matches, players,tournament.NumberOfQualifications);
+            var (teamStandings, _, _) = GeneratePlayerStats(tournament.Matches, players, tournament.NumberOfQualifications);
             await UpdatePlayoffMatches(tournament, teamStandings, match);
         }
 
