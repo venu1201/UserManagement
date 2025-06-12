@@ -1,6 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Security.Claims;
 using BackendApi.Data;
 using BackendApi.Models;
@@ -47,21 +44,31 @@ public class RealCricketController : ControllerBase
     }
 
     [HttpGet("GetDashboardData")]
-    public async Task<IActionResult> GetDashboardData()
+    public async Task<IActionResult> GetDashboardData(int? tournamentId)
     {
-        Tournament? tournament = await _dbContext.Tournament
+        Tournament? tournament = null;
+        if (tournamentId != null)
+        {
+            tournament = await _dbContext.Tournament
+            .Include(t => t.Matches)
+            .FirstOrDefaultAsync(t => t.Id == tournamentId);
+        }
+        else
+        {
+            tournament = await _dbContext.Tournament
             .Where(t => t.Status == "InProgress" && t.IsActive)
             .OrderByDescending(t => t.Id)
             .Include(t => t.Matches).FirstOrDefaultAsync()
             ;
 
-        if (tournament == null)
-        {
-            tournament = await _dbContext.Tournament
-                .Where(t => t.IsActive)
-                .OrderByDescending(t => t.Id)
-                .Include(t => t.Matches)
-                .FirstOrDefaultAsync();
+            if (tournament == null)
+            {
+                tournament = await _dbContext.Tournament
+                    .Where(t => t.IsActive)
+                    .OrderByDescending(t => t.Id)
+                    .Include(t => t.Matches)
+                    .FirstOrDefaultAsync();
+            }
         }
 
         if (tournament == null)
@@ -73,7 +80,7 @@ public class RealCricketController : ControllerBase
                                                    .Select(p => p.Trim())
                                                    .ToList() ?? new List<string>();
 
-        var (teamStandings, topBatsmen, topBowlers) = GeneratePlayerStats(tournament.Matches, players);
+        var (teamStandings, topBatsmen, topBowlers) = GeneratePlayerStats(tournament.Matches, players,tournament.NumberOfQualifications);
 
         var dashboardData = new DashboardData
         {
@@ -93,7 +100,6 @@ public class RealCricketController : ControllerBase
             CompletedMatches = tournament.Matches
                 .Where(m => !string.IsNullOrEmpty(m.WinnerId))
                 .OrderByDescending(m => m.MatchNumber)
-                .Take(4)
                 .ToList(),
             QualificationChances = GenerateQualificationChances(
                                         teamStandings,
@@ -106,7 +112,7 @@ public class RealCricketController : ControllerBase
         return Ok(dashboardData);
     }
 
-    private (List<TeamStanding>, List<TopBatsman>, List<TopBowler>) GeneratePlayerStats(List<Match> matches, List<string> players)
+    private (List<TeamStanding>, List<TopBatsman>, List<TopBowler>) GeneratePlayerStats(List<Match> matches, List<string> players,int numberOfQualifications)
     {
         var teamStandings = new List<TeamStanding>();
         var battingStats = new List<(string Name, int Runs, int Balls, int Matches, int Innings)>();
@@ -191,6 +197,13 @@ public class RealCricketController : ControllerBase
             .Select((s, index) => { s.Rank = index + 1; return s; })
             .ToList();
 
+        var remainingMatches = matches.Where(m => m.MatchType == "League" && string.IsNullOrEmpty(m.WinnerId)).ToList();
+
+        foreach (var standing in rankedStandings)
+        {
+            standing.IsQualified = IsTeamQualified(standing, rankedStandings, remainingMatches, numberOfQualifications, matches);
+        }
+
         var topBatsmen = battingStats
             .Where(b => b.Innings > 0)
             .Select(b => new TopBatsman
@@ -202,7 +215,6 @@ public class RealCricketController : ControllerBase
                 StrikeRate = b.Balls > 0 ? Math.Round((double)b.Runs / b.Balls * 100, 1) : 0
             })
             .OrderByDescending(b => b.Runs)
-            .Take(5)
             .Select((b, index) => { b.Rank = index + 1; return b; })
             .ToList();
 
@@ -217,11 +229,122 @@ public class RealCricketController : ControllerBase
                 Average = b.Wickets > 0 ? Math.Round((double)b.RunsConceded / b.Wickets, 1) : 0
             })
             .OrderByDescending(b => b.Wickets)
-            .Take(5)
             .Select((b, index) => { b.Rank = index + 1; return b; })
             .ToList();
 
         return (rankedStandings, topBatsmen, topBowlers);
+    }
+    private bool IsTeamQualified(TeamStanding team, List<TeamStanding> allStandings, List<Match> remainingMatches, int qualificationSpots, List<Match> allMatches)
+    {
+        if (team.Rank > qualificationSpots)
+            return false;
+
+        // Calculate maximum possible points for teams below the qualification line
+        var teamsBelow = allStandings.Where(t => t.Rank > qualificationSpots).ToList();
+
+        foreach (var belowTeam in teamsBelow)
+        {
+            // Calculate maximum points this team can achieve
+            var teamRemainingMatches = remainingMatches.Where(m =>
+                m.Player1Id == belowTeam.Team || m.Player2Id == belowTeam.Team).Count();
+
+            var maxPossiblePoints = belowTeam.Points + (teamRemainingMatches * 2);
+
+            // If team below has more possible points, current team is not qualified
+            if (maxPossiblePoints > team.Points)
+            {
+                return false;
+            }
+
+            // If points are equal, check NRR scenarios
+            if (maxPossiblePoints == team.Points)
+            {
+                // Calculate current NRR stats for both teams
+                var teamCurrentStats = GetTeamNRRStats(team.Team, allMatches);
+                var belowTeamCurrentStats = GetTeamNRRStats(belowTeam.Team, allMatches);
+
+                // Calculate best possible NRR for the team below
+                var bestPossibleNRR = CalculateBestPossibleNRR(belowTeam.Team, belowTeamCurrentStats, remainingMatches);
+
+                // Calculate worst possible NRR for current team
+                var worstPossibleNRR = CalculateWorstPossibleNRR(team.Team, teamCurrentStats, remainingMatches);
+
+                // If team below can achieve better NRR, current team is not qualified
+                if (bestPossibleNRR > worstPossibleNRR)
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+    private (int RunsFor, int RunsAgainst, int BallsFaced, int BallsBowled) GetTeamNRRStats(string teamName, List<Match> allMatches)
+    {
+        var teamMatches = allMatches.Where(m =>
+            (m.Player1Id == teamName || m.Player2Id == teamName) &&
+            m.MatchType == "League" &&
+            !string.IsNullOrEmpty(m.WinnerId)).ToList();
+
+        int runsFor = 0, runsAgainst = 0, ballsFaced = 0, ballsBowled = 0;
+
+        foreach (var match in teamMatches)
+        {
+            if (match.Player1Id == teamName)
+            {
+                runsFor += match.Player1Score;
+                runsAgainst += match.Player2Score;
+                ballsFaced += match.Player1Balls;
+                ballsBowled += match.Player2Balls;
+            }
+            else
+            {
+                runsFor += match.Player2Score;
+                runsAgainst += match.Player1Score;
+                ballsFaced += match.Player2Balls;
+                ballsBowled += match.Player1Balls;
+            }
+        }
+
+        return (runsFor, runsAgainst, ballsFaced, ballsBowled);
+    }
+
+    // Calculate best possible NRR for a team (assuming they win all remaining matches with best possible scores)
+    private double CalculateBestPossibleNRR(string teamName, (int RunsFor, int RunsAgainst, int BallsFaced, int BallsBowled) currentStats, List<Match> remainingMatches)
+    {
+        var teamRemainingMatches = remainingMatches.Where(m => m.Player1Id == teamName || m.Player2Id == teamName).ToList();
+
+        // Assume best case: score 70 runs in 30 balls, restrict opponent to 20 runs in 30 balls
+        int additionalRunsFor = teamRemainingMatches.Count * 70;
+        int additionalRunsAgainst = teamRemainingMatches.Count * 20;
+        int additionalBallsFaced = teamRemainingMatches.Count * 30;
+        int additionalBallsBowled = teamRemainingMatches.Count * 30;
+
+        int totalRunsFor = currentStats.RunsFor + additionalRunsFor;
+        int totalRunsAgainst = currentStats.RunsAgainst + additionalRunsAgainst;
+        int totalBallsFaced = currentStats.BallsFaced + additionalBallsFaced;
+        int totalBallsBowled = currentStats.BallsBowled + additionalBallsBowled;
+
+        return CalculateNetRunRate(totalRunsFor, totalRunsAgainst, totalBallsFaced, totalBallsBowled);
+    }
+
+    // Calculate worst possible NRR for a team (assuming they lose all remaining matches with worst possible scores)
+    private double CalculateWorstPossibleNRR(string teamName, (int RunsFor, int RunsAgainst, int BallsFaced, int BallsBowled) currentStats, List<Match> remainingMatches)
+    {
+        var teamRemainingMatches = remainingMatches.Where(m => m.Player1Id == teamName || m.Player2Id == teamName).ToList();
+
+        // Assume worst case: score 20 runs in 30 balls, concede 70 runs in 30 balls
+        int additionalRunsFor = teamRemainingMatches.Count * 20;
+        int additionalRunsAgainst = teamRemainingMatches.Count * 70;
+        int additionalBallsFaced = teamRemainingMatches.Count * 30;
+        int additionalBallsBowled = teamRemainingMatches.Count * 30;
+
+        int totalRunsFor = currentStats.RunsFor + additionalRunsFor;
+        int totalRunsAgainst = currentStats.RunsAgainst + additionalRunsAgainst;
+        int totalBallsFaced = currentStats.BallsFaced + additionalBallsFaced;
+        int totalBallsBowled = currentStats.BallsBowled + additionalBallsBowled;
+
+        return CalculateNetRunRate(totalRunsFor, totalRunsAgainst, totalBallsFaced, totalBallsBowled);
     }
 
     private List<QualificationChance> GenerateQualificationChances(List<TeamStanding> standings, List<Match> remainingMatches, List<Match> allMatches)
@@ -241,7 +364,7 @@ public class RealCricketController : ControllerBase
 
     private (int top2, int top4) CalculateQualificationChance(TeamStanding targetTeam, List<TeamStanding> allStandings, List<Match> remainingMatches, List<Match> allMatches)
     {
-        const int simulations = 5000;
+        const int simulations = 10000;
         int top2Count = 0;
         int top4Count = 0;
         var random = new Random();
@@ -566,12 +689,12 @@ public class RealCricketController : ControllerBase
         var leagueMatches = tournament.Matches.Where(m => m.MatchType == "League").ToList();
         if (leagueMatches.All(m => !string.IsNullOrEmpty(m.WinnerId)))
         {
-            var (teamStandings, _, _) = GeneratePlayerStats(tournament.Matches, players);
+            var (teamStandings, _, _) = GeneratePlayerStats(tournament.Matches, players,tournament.NumberOfQualifications);
             await UpdatePlayoffMatches(tournament, teamStandings, match);
         }
         else if (match.MatchType != "League" && !string.IsNullOrEmpty(match.WinnerId))
         {
-            var (teamStandings, _, _) = GeneratePlayerStats(tournament.Matches, players);
+            var (teamStandings, _, _) = GeneratePlayerStats(tournament.Matches, players,tournament.NumberOfQualifications);
             await UpdatePlayoffMatches(tournament, teamStandings, match);
         }
 
@@ -892,73 +1015,4 @@ public class RealCricketController : ControllerBase
             Player2Wickets = 0,
         };
     }
-}
-
-public class DashboardData
-{
-    public TournamentSummary Tournament { get; set; }
-    public List<TeamStanding> TeamStandings { get; set; } = new();
-    public List<TopBatsman> TopBatsmen { get; set; } = new();
-    public List<TopBowler> TopBowlers { get; set; } = new();
-    public List<Match> UpcomingMatches { get; set; } = new();
-    public List<Match> CompletedMatches { get; set; } = new();
-    public List<Match> Schedule { get; set; } = new();
-    public List<QualificationChance> QualificationChances { get; set; } = new();
-    public TournamentHighlights Highlights { get; set; }
-}
-
-public class TournamentSummary
-{
-    public string Name { get; set; }
-    public string Status { get; set; }
-    public int TotalMatches { get; set; }
-    public int CompletedMatches { get; set; }
-    public int RemainingMatches { get; set; }
-}
-
-public class TeamStanding
-{
-    public int Rank { get; set; }
-    public string Team { get; set; } = string.Empty;
-    public int Played { get; set; }
-    public int Won { get; set; }
-    public int Lost { get; set; }
-    public int Points { get; set; }
-    public string NetRunRate { get; set; } = string.Empty;
-}
-
-public class TopBatsman
-{
-    public int Rank { get; set; }
-    public string Name { get; set; }
-    public int Runs { get; set; }
-    public int Matches { get; set; }
-    public double Average { get; set; }
-    public double StrikeRate { get; set; }
-}
-
-public class TopBowler
-{
-    public int Rank { get; set; }
-    public string Name { get; set; }
-    public int Wickets { get; set; }
-    public int Matches { get; set; }
-    public double Economy { get; set; }
-    public double Average { get; set; }
-}
-
-public class QualificationChance
-{
-    public string Team { get; set; }
-    public int Top2Chance { get; set; }
-    public int Top4Chance { get; set; }
-    public string Status { get; set; }
-}
-
-public class TournamentHighlights
-{
-    public int HighestIndividualScore { get; set; }
-    public int MostWickets { get; set; }
-    public int HighestTeamScore { get; set; }
-    public double BestStrikeRate { get; set; }
 }
