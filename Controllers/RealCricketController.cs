@@ -103,8 +103,8 @@ public class RealCricketController : ControllerBase
                 .ToList(),
             QualificationChances = GenerateQualificationChances(
                                         teamStandings,
-                                        tournament.Matches.Where(m => string.IsNullOrEmpty(m.WinnerId)).ToList(),
-                                        tournament.Matches.ToList()
+                                        tournament.Matches.Where(m => m.MatchType == "League" && string.IsNullOrEmpty(m.WinnerId)).ToList(),
+                                        tournament.Matches.Where(m=>m.MatchType == "League").ToList()
                                     ),
             Highlights = GenerateHighlights(tournament.Matches)
         };
