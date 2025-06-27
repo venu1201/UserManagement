@@ -1,7 +1,6 @@
 using System.Security.Claims;
 using BackendApi.Data;
 using BackendApi.Models;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -152,7 +151,7 @@ public class RealCricketController : ControllerBase
 
                     bowlingWickets += match.Player2Wickets;
                     bowlingRunsConceded += match.Player2Score;
-                    bowlingBalls += match.Player1Balls;
+                    bowlingBalls += match.Player2Balls;
                 }
                 else
                 {
@@ -162,7 +161,7 @@ public class RealCricketController : ControllerBase
 
                     bowlingWickets += match.Player1Wickets;
                     bowlingRunsConceded += match.Player1Score;
-                    bowlingBalls += match.Player2Balls;
+                    bowlingBalls += match.Player1Balls;
                 }
             }
 
@@ -250,37 +249,28 @@ public class RealCricketController : ControllerBase
         if (team.Rank > qualificationSpots)
             return false;
 
-        // Calculate maximum possible points for teams below the qualification line
         var teamsBelow = allStandings.Where(t => t.Rank > qualificationSpots).ToList();
 
         foreach (var belowTeam in teamsBelow)
         {
-            // Calculate maximum points this team can achieve
             var teamRemainingMatches = remainingMatches.Where(m =>
                 m.Player1Id == belowTeam.Team || m.Player2Id == belowTeam.Team).Count();
 
             var maxPossiblePoints = belowTeam.Points + (teamRemainingMatches * 2);
 
-            // If team below has more possible points, current team is not qualified
             if (maxPossiblePoints > team.Points)
             {
                 return false;
             }
 
-            // If points are equal, check NRR scenarios
             if (maxPossiblePoints == team.Points)
             {
-                // Calculate current NRR stats for both teams
                 var teamCurrentStats = GetTeamNRRStats(team.Team, allMatches);
                 var belowTeamCurrentStats = GetTeamNRRStats(belowTeam.Team, allMatches);
 
-                // Calculate best possible NRR for the team below
                 var bestPossibleNRR = CalculateBestPossibleNRR(belowTeam.Team, belowTeamCurrentStats, remainingMatches);
-
-                // Calculate worst possible NRR for current team
                 var worstPossibleNRR = CalculateWorstPossibleNRR(team.Team, teamCurrentStats, remainingMatches);
 
-                // If team below can achieve better NRR, current team is not qualified
                 if (bestPossibleNRR > worstPossibleNRR)
                 {
                     return false;
@@ -320,12 +310,10 @@ public class RealCricketController : ControllerBase
         return (runsFor, runsAgainst, ballsFaced, ballsBowled);
     }
 
-    // Calculate best possible NRR for a team (assuming they win all remaining matches with best possible scores)
     private double CalculateBestPossibleNRR(string teamName, (int RunsFor, int RunsAgainst, int BallsFaced, int BallsBowled) currentStats, List<Match> remainingMatches)
     {
         var teamRemainingMatches = remainingMatches.Where(m => m.Player1Id == teamName || m.Player2Id == teamName).ToList();
 
-        // Assume best case: score 70 runs in 30 balls, restrict opponent to 20 runs in 30 balls
         int additionalRunsFor = teamRemainingMatches.Count * 70;
         int additionalRunsAgainst = teamRemainingMatches.Count * 20;
         int additionalBallsFaced = teamRemainingMatches.Count * 30;
@@ -339,12 +327,10 @@ public class RealCricketController : ControllerBase
         return CalculateNetRunRate(totalRunsFor, totalRunsAgainst, totalBallsFaced, totalBallsBowled);
     }
 
-    // Calculate worst possible NRR for a team (assuming they lose all remaining matches with worst possible scores)
     private double CalculateWorstPossibleNRR(string teamName, (int RunsFor, int RunsAgainst, int BallsFaced, int BallsBowled) currentStats, List<Match> remainingMatches)
     {
         var teamRemainingMatches = remainingMatches.Where(m => m.Player1Id == teamName || m.Player2Id == teamName).ToList();
 
-        // Assume worst case: score 20 runs in 30 balls, concede 70 runs in 30 balls
         int additionalRunsFor = teamRemainingMatches.Count * 20;
         int additionalRunsAgainst = teamRemainingMatches.Count * 70;
         int additionalBallsFaced = teamRemainingMatches.Count * 30;
@@ -441,7 +427,7 @@ public class RealCricketController : ControllerBase
                     int team1Points = 0, team2Points = 0;
                     if (team1Score > team2Score)
                     {
-                        team1Points = 2; // Team1 wins
+                        team1Points = 2;
                     }
                     else if (team2Score > team1Score)
                     {
